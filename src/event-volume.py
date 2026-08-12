@@ -7,8 +7,14 @@ import websockets
 import sqlite3
 import zlib
 import uuid
+from tenacity import retry, wait_exponential_jitter, retry_if_exception_type
 
-async def ingest_raw_data(ws_url: str, tickers: list[str], batch_size: int = 1000, flush_interval: float = 5.0):
+@retry(
+        retry=retry_if_exception_type((websockets.exceptions.ConnectionClosed, OSError, TimeoutError)),
+        wait=wait_exponential_jitter(initial=1, max=30, jitter=2),
+        reraise=True
+)
+async def ingest_raw_data(ws_url: str, tickers: list[str], stream_type: str, batch_size: int = 1000, flush_interval: float = 5.0):
     con = sqlite3.connect('raw_events.db')
     con.execute('PRAGMA journal_mode=WAL;')
     con.execute('PRAGMA synchronous=NORMAL;')
@@ -42,7 +48,7 @@ async def ingest_raw_data(ws_url: str, tickers: list[str], batch_size: int = 100
                 if len(buffer) >= batch_size or (now - last_flush) >= flush_interval:
 
                     batch_id = str(uuid.uuid4())
-                    batch_data = [(batch_id, ts, 'agg_trade', payload) for ts, payload in buffer]
+                    batch_data = [(batch_id, ts, stream_type, payload) for ts, payload in buffer]
 
                     con.executemany('INSERT INTO events (batch_id, time, stream_type, payload) VALUES (?, ?, ?, ?)', batch_data)
                     con.commit()
@@ -52,19 +58,20 @@ async def ingest_raw_data(ws_url: str, tickers: list[str], batch_size: int = 100
 
                     last_flush = now
     except websockets.exceptions.ConnectionClosed:
-        print('Conexión con el websocket cerrada')
+        print('Conexión con el websocket cerrada, Reintentando...')
+        raise
     finally:
         if buffer:
             batch_id = str(uuid.uuid4())
-            batch_data = [(batch_id, ts, 'agg_trade', payload) for ts, payload in buffer]
-            con.executemany('INSERT INTO events (batch_id, time, stream_type, payload) VALUES (?, ?, ?, ?)', buffer)
+            batch_data = [(batch_id, ts, stream_type, payload) for ts, payload in buffer]
+            con.executemany('INSERT INTO events (batch_id, time, stream_type, payload) VALUES (?, ?, ?, ?)', batch_data)
             con.commit()
             print(f'Guardado lote final con {len(buffer)} eventos')
         con.close()
 
 if __name__ == '__main__':
     try:
-        asyncio.run(ingest_raw_data(ws_url='wss://stream.binance.com:9443/stream', tickers=["btcusdt@aggTrade", "ethusdt@aggTrade", "solusdt@aggTrade"]))
+        asyncio.run(ingest_raw_data(ws_url='wss://stream.binance.com:9443/stream', tickers=["btcusdt@aggTrade", "ethusdt@aggTrade", "solusdt@aggTrade"], stream_type='agg_trade'))
     except KeyboardInterrupt:
         print('El usuario ha cancelado el proceso. Saliendo...')
         sys.exit(0)

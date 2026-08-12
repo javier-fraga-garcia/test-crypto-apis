@@ -8,5 +8,6 @@ dependencies = [
     "httpx>=0.28.1",
     "pydantic>=2.13.4",
     "ruff>=0.15.15",
+    "tenacity>=9.1.4",
     "websockets>=16.0",
 ]
